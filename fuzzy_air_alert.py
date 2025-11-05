@@ -2,355 +2,539 @@
 """
 fuzzy_air_alert.py
 
-Complete Fuzzy Inference System for "Public Health Alert Level" from urban air-quality CSVs.
-
-- Inputs: PM2.5, NO2, O3 (µg/m3), Vulnerability (0..1), Wind speed (m/s)
-- Output: fuzzy_alert_index (0..100) and alert_level (Low, Moderate, High-sensitive, Severe-all)
-
-Usage:
-    python fuzzy_air_alert.py --input /mnt/data/kuala-lumpur-air-quality.csv \
-                              --output /mnt/data/kuala-lumpur-air-quality-with-alerts.csv
-
-Requirements:
-    pip install numpy pandas matplotlib
+Complete implementation of the Fuzzy Inference System for Public Health Alert Level
+based on the PDF specification with all 5 inputs, comprehensive rule base, AND visual outputs.
 """
 
-import argparse
-import os
-from math import isclose
 import numpy as np
 import pandas as pd
+import skfuzzy as fuzz
+from skfuzzy import control as ctrl
 import matplotlib.pyplot as plt
+import os
 
-# -----------------------------
-# Membership function helpers
-# -----------------------------
-def trapmf(x, a, b, c, d):
-    """Trapezoidal MF"""
-    x = np.array(x, dtype=float)
-    y = np.zeros_like(x)
-    # rising edge
-    idx = (a < x) & (x <= b)
-    if not isclose(b, a):
-        y[idx] = (x[idx] - a) / (b - a)
-    else:
-        y[idx] = 1.0
-    # top
-    idx2 = (b < x) & (x <= c)
-    y[idx2] = 1.0
-    # falling edge
-    idx3 = (c < x) & (x < d)
-    if not isclose(d, c):
-        y[idx3] = (d - x[idx3]) / (d - c)
-    else:
-        y[idx3] = 1.0
-    return y
+# ------------------------
+# 1) Build Complete FIS with ALL 5 inputs
+# ------------------------
 
-def trimf(x, a, b, c):
-    """Triangular MF via trapezoid with top at b"""
-    return trapmf(x, a, b, b, c)
+# Input variables with proper ranges based on WHO/EPA standards
+pm25 = ctrl.Antecedent(np.arange(0, 251, 1), 'pm25')  # μg/m³
+no2 = ctrl.Antecedent(np.arange(0, 201, 1), 'no2')  # ppb
+o3 = ctrl.Antecedent(np.arange(0, 201, 1), 'o3')  # ppb
+wind_speed = ctrl.Antecedent(np.arange(0, 21, 0.1), 'wind_speed')  # m/s
+pvi = ctrl.Antecedent(np.arange(0, 11, 0.1), 'pvi')  # Population Vulnerability Index 0-10
 
-# -----------------------------
-# Universe definitions & MFs
-# -----------------------------
-u_pm25 = np.linspace(0, 300, 301)
-u_no2  = np.linspace(0, 300, 301)
-u_o3   = np.linspace(0, 300, 301)
-u_vul  = np.linspace(0, 1, 101)
-u_wind = np.linspace(0, 10, 101)
-u_out  = np.linspace(0, 100, 101)
+# Output variable
+alert = ctrl.Consequent(np.arange(0, 101, 1), 'alert')  # Public Health Alert Level 0-100
 
-# PM2.5
-pm25_low  = trapmf(u_pm25, 0, 0, 12, 25)
-pm25_mod  = trimf(u_pm25, 12, 35, 55)
-pm25_high = trimf(u_pm25, 35, 75, 125)
-pm25_vhigh= trapmf(u_pm25, 75, 125, 300, 300)
+# ------------------------
+# 2) Membership Functions based on report specifications
+# ------------------------
 
-# NO2
-no2_low  = trapmf(u_no2, 0, 0, 40, 80)
-no2_mod  = trimf(u_no2, 40, 100, 160)
-no2_high = trimf(u_no2, 100, 180, 240)
-no2_vhigh= trapmf(u_no2, 180, 240, 300, 300)
+# PM2.5 Membership Functions (based on Kho Weng Khai's guidelines)
+pm25['low'] = fuzz.trapmf(pm25.universe, [0, 0, 10, 25])
+pm25['moderate'] = fuzz.trimf(pm25.universe, [15, 25, 35])
+pm25['high'] = fuzz.trimf(pm25.universe, [30, 45, 60])
+pm25['very_high'] = fuzz.trapmf(pm25.universe, [55, 70, 250, 250])
 
-# O3
-o3_low  = trapmf(u_o3, 0, 0, 30, 60)
-o3_mod  = trimf(u_o3, 30, 80, 130)
-o3_high = trimf(u_o3, 80, 150, 220)
-o3_vhigh= trapmf(u_o3, 150, 220, 300, 300)
+# NO2 Membership Functions
+no2['low'] = fuzz.trapmf(no2.universe, [0, 0, 40, 80])
+no2['moderate'] = fuzz.trimf(no2.universe, [50, 80, 110])
+no2['high'] = fuzz.trapmf(no2.universe, [90, 120, 200, 200])
 
-# Vulnerability
-vul_low  = trapmf(u_vul, 0.0, 0.0, 0.2, 0.4)
-vul_med  = trimf(u_vul, 0.2, 0.5, 0.8)
-vul_high = trapmf(u_vul, 0.6, 0.8, 1.0, 1.0)
+# O3 Membership Functions
+o3['low'] = fuzz.trapmf(o3.universe, [0, 0, 50, 80])
+o3['moderate'] = fuzz.trimf(o3.universe, [60, 90, 120])
+o3['high'] = fuzz.trapmf(o3.universe, [100, 130, 200, 200])
 
-# Wind speed (low => poor dispersion)
-wind_low = trapmf(u_wind, 0.0, 0.0, 1.0, 3.0)
-wind_mod = trimf(u_wind, 1.5, 4.0, 6.5)
-wind_high= trapmf(u_wind, 5.0, 7.0, 10.0, 10.0)
+# Wind Speed Membership Functions (from PDF Table 2)
+wind_speed['low'] = fuzz.trapmf(wind_speed.universe, [0, 0, 1, 2.5])
+wind_speed['medium'] = fuzz.trimf(wind_speed.universe, [1.5, 4, 8])
+wind_speed['high'] = fuzz.trapmf(wind_speed.universe, [6, 8, 20, 20])
 
-# Output MFs
-out_low   = trapmf(u_out, 0, 0, 15, 30)
-out_mod   = trimf(u_out, 20, 37.5, 55)
-out_highs = trimf(u_out, 45, 62.5, 80)
-out_severe= trapmf(u_out, 70, 82.5, 100, 100)
+# Population Vulnerability Index Membership Functions
+pvi['low'] = fuzz.trapmf(pvi.universe, [0, 0, 2, 4])
+pvi['medium'] = fuzz.trimf(pvi.universe, [3, 5, 7])
+pvi['high'] = fuzz.trapmf(pvi.universe, [6, 8, 10, 10])
 
-input_mfs = {
-    'pm25': {'low': pm25_low, 'mod': pm25_mod, 'high': pm25_high, 'vhigh': pm25_vhigh},
-    'no2' : {'low': no2_low,  'mod': no2_mod,  'high': no2_high,  'vhigh': no2_vhigh},
-    'o3'  : {'low': o3_low,   'mod': o3_mod,   'high': o3_high,   'vhigh': o3_vhigh},
-    'vul' : {'low': vul_low,  'med': vul_med,  'high': vul_high},
-    'wind': {'low': wind_low, 'mod': wind_mod, 'high': wind_high},
-}
+# Alert Level Membership Functions (matching PDF output categories)
+alert['low_risk'] = fuzz.trapmf(alert.universe, [0, 0, 15, 25])
+alert['moderate_advisory'] = fuzz.trimf(alert.universe, [20, 35, 50])
+alert['high_alert'] = fuzz.trimf(alert.universe, [45, 60, 75])
+alert['severe_warning'] = fuzz.trapmf(alert.universe, [70, 85, 100, 100])
 
-output_mfs = {'low': out_low, 'moderate': out_mod, 'highs': out_highs, 'severe': out_severe}
+# ------------------------
+# 3) Comprehensive Rule Base (Representative subset of 324 possible rules)
+# ------------------------
 
-# -----------------------------
-# Rule Base
-# -----------------------------
-# Format: (conditions_dict, output_label, weight)
 rules = [
-    ({'pm25':'vhigh', 'vul':'high'}, 'severe', 1.0),
-    ({'no2':'vhigh',  'vul':'high'}, 'severe', 1.0),
-    ({'o3':'vhigh',   'vul':'high'}, 'severe', 1.0),
-    ({'pm25':'high', 'no2':'high', 'wind':'low'}, 'severe', 0.95),
-    ({'pm25':'high', 'o3':'high',  'wind':'low'}, 'severe', 0.95),
-    ({'no2':'high',  'o3':'high',  'wind':'low'}, 'severe', 0.95),
-    ({'pm25':'high', 'vul':['med','low']}, 'highs', 0.9),
-    ({'no2':'high',  'vul':['med','low']}, 'highs', 0.9),
-    ({'o3':'high',   'vul':['med','low']}, 'highs', 0.9),
-    ({'pm25':'mod', 'no2':'mod', 'o3':'mod', 'wind':['mod','high']}, 'moderate', 0.8),
-    ({'pm25':'mod', 'vul':'low', 'wind':'high'}, 'moderate', 0.7),
-    ({'pm25':'low', 'no2':'low', 'o3':'low'}, 'low', 1.0),
-    ({'vul':'low', 'wind':'high'}, 'low', 0.8),
-    ({'pm25':['mod','high'], 'vul':'high'}, 'highs', 0.7),
-    ({'no2':['mod','high'],  'vul':'high'}, 'highs', 0.7),
-    ({'o3':['mod','high'],   'vul':'high'}, 'highs', 0.7),
+    # Category 1: Baseline Rules
+    ctrl.Rule(pm25['low'] & no2['low'] & o3['low'], alert['low_risk']),
+    ctrl.Rule(pm25['very_high'], alert['severe_warning']),
+    ctrl.Rule(no2['high'] & pm25['low'] & o3['low'], alert['high_alert']),
+    ctrl.Rule(o3['high'] & pm25['low'] & no2['low'], alert['high_alert']),
+
+    # Category 2: Synergistic-Effect Rules
+    ctrl.Rule(pm25['moderate'] & o3['moderate'], alert['moderate_advisory']),
+    ctrl.Rule(pm25['moderate'] & no2['moderate'] & o3['moderate'], alert['high_alert']),
+    ctrl.Rule(pm25['moderate'] & o3['moderate'] & wind_speed['low'], alert['high_alert']),
+    ctrl.Rule(pm25['high'] & no2['moderate'] & wind_speed['low'], alert['severe_warning']),
+
+    # Category 3: Vulnerability-Amplifying Rules
+    ctrl.Rule(pm25['moderate'] & pvi['high'], alert['high_alert']),
+    ctrl.Rule(no2['high'] & pvi['high'], alert['severe_warning']),
+    ctrl.Rule(o3['moderate'] & pvi['high'], alert['high_alert']),
+    ctrl.Rule(pm25['high'] & pvi['high'], alert['severe_warning']),
+    ctrl.Rule(no2['high'] & pvi['high'], alert['severe_warning']),
+    ctrl.Rule(pm25['low'] & pvi['high'], alert['moderate_advisory']),
+
+    # Category 4: Mitigation Rules
+    ctrl.Rule(o3['high'] & wind_speed['high'], alert['moderate_advisory']),
+    ctrl.Rule(pm25['high'] & wind_speed['high'], alert['moderate_advisory']),
+    ctrl.Rule(no2['high'] & wind_speed['high'], alert['moderate_advisory']),
+
+    # Additional synergistic rules
+    ctrl.Rule(pm25['high'] & no2['moderate'], alert['high_alert']),
+    ctrl.Rule(pm25['moderate'] & no2['high'], alert['high_alert']),
+    ctrl.Rule(pm25['high'] & o3['moderate'], alert['high_alert']),
 ]
 
-# -----------------------------
-# FIS functions
-# -----------------------------
-def fuzzify_value(value, universe, mfs_dict):
-    memberships = {}
-    if pd.isna(value):
-        for lbl in mfs_dict:
-            memberships[lbl] = 0.0
-        return memberships
-    for label, mf in mfs_dict.items():
-        idx = np.abs(universe - float(value)).argmin()
-        memberships[label] = float(mf[idx])
-    return memberships
+# ------------------------
+# 4) Create and compile the control system
+# ------------------------
 
-def eval_rule(rule, fuzzies):
-    conds, out_label, weight = rule
-    degrees = []
-    for var, required in conds.items():
-        if isinstance(required, list):
-            # OR across listed labels
-            degrees.append(max(fuzzies[var].get(r, 0.0) for r in required))
-        else:
-            degrees.append(fuzzies[var].get(required, 0.0))
-    firing_strength = min(degrees) * weight
-    return out_label, firing_strength
+system = ctrl.ControlSystem(rules)
+sim = ctrl.ControlSystemSimulation(system)
 
-def aggregate_rule_outputs(firing_results):
-    agg = {label: np.zeros_like(u_out) for label in output_mfs.keys()}
-    for label, strength in firing_results:
-        if strength <= 0:
-            continue
-        mf = output_mfs[label]
-        clipped = np.minimum(mf, strength)
-        agg[label] = np.maximum(agg[label], clipped)
-    combined = np.zeros_like(u_out)
-    for label in agg:
-        combined = np.maximum(combined, agg[label])
-    return agg, combined
 
-def defuzz_centroid(x, mf):
-    denom = mf.sum()
-    if isclose(denom, 0.0):
-        return float(np.nan)
-    return float((x * mf).sum() / denom)
+# ------------------------
+# 5) Enhanced Sample Dataset with ALL 5 variables
+# ------------------------
 
-def run_fis_single(sample):
-    """
-    sample: dict with keys 'pm25','no2','o3','vul','wind'
-    returns: dict with 'crisp' (index 0..100), fuzzies, firing, agg_by_label, combined
-    """
-    fuzzies = {}
-    fuzzies['pm25'] = fuzzify_value(sample.get('pm25', np.nan), u_pm25, input_mfs['pm25'])
-    fuzzies['no2']  = fuzzify_value(sample.get('no2', np.nan),  u_no2,  input_mfs['no2'])
-    fuzzies['o3']   = fuzzify_value(sample.get('o3', np.nan),   u_o3,   input_mfs['o3'])
-    fuzzies['vul']  = fuzzify_value(sample.get('vul', np.nan),  u_vul,  input_mfs['vul'])
-    fuzzies['wind'] = fuzzify_value(sample.get('wind', np.nan), u_wind, input_mfs['wind'])
+def create_sample_dataset():
+    """Create realistic sample data with all 5 input variables"""
+    rng = np.random.default_rng(42)
 
-    firing = []
-    for rule in rules:
-        out_label, strength = eval_rule(rule, fuzzies)
-        firing.append((out_label, strength))
+    # 30 days of sample data
+    n_days = 30
 
-    agg_by_label, combined = aggregate_rule_outputs(firing)
-    crisp_out = defuzz_centroid(u_out, combined)
-    return {'fuzzies': fuzzies, 'firing': firing, 'agg_by_label': agg_by_label, 'combined': combined, 'crisp': crisp_out}
+    # Create segments for different pollution scenarios
+    segments = [
+        ('clean', 8, 15, 5),  # 8 clean days
+        ('moderate', 10, 40, 8),  # 10 moderate days
+        ('high', 7, 80, 15),  # 7 high days
+        ('very_high', 5, 120, 25)  # 5 very high days
+    ]
 
-# -----------------------------
-# CSV processing & plotting
-# -----------------------------
-def normalize_column_names(df):
-    new_cols = []
-    for c in df.columns:
-        nc = c.strip().lower().replace('.', '').replace(' ', '').replace('-', '')
-        new_cols.append(nc)
-    df.columns = new_cols
+    pm25_vals = []
+    no2_vals = []
+    o3_vals = []
+
+    for scenario, count, mean, std in segments:
+        pm25_segment = np.clip(rng.normal(mean, std, count), 5, 240)
+        pm25_vals.extend(pm25_segment)
+
+        # Generate correlated NO2 and O3 values
+        no2_segment = np.clip(pm25_segment * 0.8 + rng.normal(30, 20, count), 10, 190)
+        no2_vals.extend(no2_segment)
+
+        o3_segment = np.clip(rng.normal(mean * 0.7, std, count), 15, 190)
+        o3_vals.extend(o3_segment)
+
+    # Trim to exact n_days in case of rounding
+    pm25_vals = pm25_vals[:n_days]
+    no2_vals = no2_vals[:n_days]
+    o3_vals = o3_vals[:n_days]
+
+    # Wind speed (often inversely correlated with pollution)
+    wind_vals = np.clip(15 - (np.array(pm25_vals) / 20) + rng.normal(0, 2, n_days), 0.5, 18)
+
+    # Population Vulnerability Index (some areas consistently more vulnerable)
+    pvi_segments = [
+        ('low_vuln', 10, 3, 1),  # 10 low vulnerability days
+        ('medium_vuln', 12, 6, 1.5),  # 12 medium vulnerability days
+        ('high_vuln', 8, 9, 1)  # 8 high vulnerability days
+    ]
+
+    pvi_vals = []
+    for scenario, count, mean, std in pvi_segments:
+        pvi_segment = np.clip(rng.normal(mean, std, count), 0, 10)
+        pvi_vals.extend(pvi_segment)
+
+    pvi_vals = pvi_vals[:n_days]
+
+    df = pd.DataFrame({
+        'date': pd.date_range(start='2025-06-01', periods=n_days, freq='D').astype(str),
+        'pm25': np.round(pm25_vals, 1),
+        'no2': np.round(no2_vals, 1),
+        'o3': np.round(o3_vals, 1),
+        'wind_speed': np.round(wind_vals, 1),
+        'pvi': np.round(pvi_vals, 1)
+    })
+
     return df
 
-def map_columns(df):
-    col_map = {}
-    for c in df.columns:
-        if 'pm25' in c or 'pm2' in c:
-            col_map[c] = 'pm25'
-        elif 'no2' in c:
-            col_map[c] = 'no2'
-        elif 'o3' in c:
-            col_map[c] = 'o3'
-        elif 'vul' in c or 'vulnerability' in c:
-            col_map[c] = 'vul'
-        elif 'wind' in c:
-            col_map[c] = 'wind'
-        elif 'date' in c:
-            col_map[c] = 'date'
-    return df.rename(columns=col_map)
 
-def process_csv(input_path, output_path, default_vul=0.6, default_wind=3.0, save_plots=True, plots_dir=None):
-    if not os.path.isfile(input_path):
-        raise FileNotFoundError(f"Input CSV not found: {input_path}")
+# ------------------------
+# 6) PLOTTING FUNCTIONS (from fyzzy_air_alert_v2.py)
+# ------------------------
 
-    df = pd.read_csv(input_path)
-    df = normalize_column_names(df)
-    df = map_columns(df)
+def save_membership_plots(out_dir):
+    os.makedirs(out_dir, exist_ok=True)
+    fig, axes = plt.subplots(3, 2, figsize=(12, 12))
+    ax = axes.flatten()
 
-    # Convert pollutant columns to numeric and clean blank strings
-    df = df.replace(r'^\s*$', np.nan, regex=True)
-    for col in ['pm25', 'no2', 'o3']:
+    # PM2.5
+    ax[0].plot(pm25.universe, pm25['low'].mf, 'b', linewidth=1.5, label='Low')
+    ax[0].plot(pm25.universe, pm25['moderate'].mf, 'g', linewidth=1.5, label='Moderate')
+    ax[0].plot(pm25.universe, pm25['high'].mf, 'orange', linewidth=1.5, label='High')
+    ax[0].plot(pm25.universe, pm25['very_high'].mf, 'r', linewidth=1.5, label='Very High')
+    ax[0].set_title('PM2.5 Membership Functions')
+    ax[0].legend()
+    ax[0].set_ylabel('Membership')
+    ax[0].set_xlabel('PM2.5 (μg/m³)')
+    ax[0].grid(True, alpha=0.3)
+
+    # NO2
+    ax[1].plot(no2.universe, no2['low'].mf, 'b', linewidth=1.5, label='Low')
+    ax[1].plot(no2.universe, no2['moderate'].mf, 'g', linewidth=1.5, label='Moderate')
+    ax[1].plot(no2.universe, no2['high'].mf, 'r', linewidth=1.5, label='High')
+    ax[1].set_title('NO2 Membership Functions')
+    ax[1].legend()
+    ax[1].set_ylabel('Membership')
+    ax[1].set_xlabel('NO2 (ppb)')
+    ax[1].grid(True, alpha=0.3)
+
+    # O3
+    ax[2].plot(o3.universe, o3['low'].mf, 'b', linewidth=1.5, label='Low')
+    ax[2].plot(o3.universe, o3['moderate'].mf, 'g', linewidth=1.5, label='Moderate')
+    ax[2].plot(o3.universe, o3['high'].mf, 'r', linewidth=1.5, label='High')
+    ax[2].set_title('O3 Membership Functions')
+    ax[2].legend()
+    ax[2].set_ylabel('Membership')
+    ax[2].set_xlabel('O3 (ppb)')
+    ax[2].grid(True, alpha=0.3)
+
+    # Wind Speed
+    ax[3].plot(wind_speed.universe, wind_speed['low'].mf, 'b', linewidth=1.5, label='Low')
+    ax[3].plot(wind_speed.universe, wind_speed['medium'].mf, 'g', linewidth=1.5, label='Medium')
+    ax[3].plot(wind_speed.universe, wind_speed['high'].mf, 'orange', linewidth=1.5, label='High')
+    ax[3].set_title('Wind Speed Membership Functions')
+    ax[3].legend()
+    ax[3].set_ylabel('Membership')
+    ax[3].set_xlabel('Wind Speed (m/s)')
+    ax[3].grid(True, alpha=0.3)
+
+    # PVI
+    ax[4].plot(pvi.universe, pvi['low'].mf, 'b', linewidth=1.5, label='Low')
+    ax[4].plot(pvi.universe, pvi['medium'].mf, 'g', linewidth=1.5, label='Medium')
+    ax[4].plot(pvi.universe, pvi['high'].mf, 'r', linewidth=1.5, label='High')
+    ax[4].set_title('Population Vulnerability Index Membership Functions')
+    ax[4].legend()
+    ax[4].set_ylabel('Membership')
+    ax[4].set_xlabel('PVI (0-10)')
+    ax[4].grid(True, alpha=0.3)
+
+    # Alert Level
+    ax[5].plot(alert.universe, alert['low_risk'].mf, 'g', linewidth=1.5, label='Low Risk')
+    ax[5].plot(alert.universe, alert['moderate_advisory'].mf, 'y', linewidth=1.5, label='Moderate Advisory')
+    ax[5].plot(alert.universe, alert['high_alert'].mf, 'orange', linewidth=1.5, label='High Alert')
+    ax[5].plot(alert.universe, alert['severe_warning'].mf, 'r', linewidth=1.5, label='Severe Warning')
+    ax[5].set_title('Public Health Alert Level Membership Functions')
+    ax[5].legend()
+    ax[5].set_ylabel('Membership')
+    ax[5].set_xlabel('Alert Level (0-100)')
+    ax[5].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    path = os.path.join(out_dir, 'membership_functions_complete.png')
+    plt.savefig(path, dpi=200, bbox_inches='tight')
+    plt.close()
+    return path
+
+
+def save_timeseries_plot(df, out_dir):
+    os.makedirs(out_dir, exist_ok=True)
+    try:
+        df['date_parsed'] = pd.to_datetime(df['date'])
+    except Exception:
+        df['date_parsed'] = pd.RangeIndex(len(df))
+
+    raw = df['fuzzy_alert_index'].astype(float)
+    plt.figure(figsize=(12, 6))
+
+    # Create color-coded scatter plot based on alert level
+    colors = {
+        'Low Risk': 'green',
+        'Moderate Advisory': 'yellow',
+        'High Alert': 'orange',
+        'Severe Warning': 'red'
+    }
+
+    for level, color in colors.items():
+        mask = df['alert_level'] == level
+        if mask.any():
+            plt.scatter(df.loc[mask, 'date_parsed'], df.loc[mask, 'fuzzy_alert_index'],
+                        c=color, label=level, s=50, alpha=0.7)
+
+    # Connect points with lines
+    plt.plot(df['date_parsed'], raw, 'k-', alpha=0.3, linewidth=1)
+
+    # Highlight min and max
+    min_idx = raw.idxmin()
+    max_idx = raw.idxmax()
+    plt.scatter([df['date_parsed'].iloc[min_idx]], [raw.iloc[min_idx]],
+                color='blue', s=100, marker='*', label='Minimum', zorder=5)
+    plt.scatter([df['date_parsed'].iloc[max_idx]], [raw.iloc[max_idx]],
+                color='purple', s=100, marker='*', label='Maximum', zorder=5)
+
+    plt.title(
+        f'Fuzzy Public Health Alert Level Over Time\n(Min: {raw.min():.1f}, Max: {raw.max():.1f}, Mean: {raw.mean():.1f})')
+    plt.xlabel('Date')
+    plt.ylabel('Public Health Alert Level (0-100)')
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.grid(True, alpha=0.3)
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+
+    timeseries_path = os.path.join(out_dir, 'fuzzy_alert_timeseries_complete.png')
+    plt.savefig(timeseries_path, dpi=200, bbox_inches='tight')
+    plt.close()
+    return timeseries_path
+
+
+def save_alert_distribution_plot(df, out_dir):
+    """Additional plot: Distribution of alert levels"""
+    os.makedirs(out_dir, exist_ok=True)
+
+    alert_counts = df['alert_level'].value_counts().sort_index()
+    colors = ['green', 'yellow', 'orange', 'red']
+
+    plt.figure(figsize=(10, 6))
+    bars = plt.bar(alert_counts.index.astype(str), alert_counts.values, color=colors, alpha=0.7)
+
+    plt.title('Distribution of Public Health Alert Levels')
+    plt.xlabel('Alert Level')
+    plt.ylabel('Number of Days')
+    plt.xticks(rotation=45)
+
+    # Add value labels on bars
+    for bar in bars:
+        height = bar.get_height()
+        plt.text(bar.get_x() + bar.get_width() / 2., height,
+                 f'{int(height)} days', ha='center', va='bottom')
+
+    plt.grid(True, alpha=0.3, axis='y')
+    plt.tight_layout()
+
+    dist_path = os.path.join(out_dir, 'alert_level_distribution.png')
+    plt.savefig(dist_path, dpi=200, bbox_inches='tight')
+    plt.close()
+    return dist_path
+
+
+# ------------------------
+# 7) Run FIS for all rows
+# ------------------------
+
+def run_fuzzy_analysis(input_csv=None, output_dir='output'):
+    """Main function to run the complete fuzzy analysis"""
+
+    # Load or create dataset
+    if input_csv and os.path.isfile(input_csv):
+        df = pd.read_csv(input_csv)
+        # Normalize column names
+        df.columns = [c.strip().lower().replace(' ', '_').replace('.', '') for c in df.columns]
+    else:
+        df = create_sample_dataset()
+        print(f"Created sample dataset with {len(df)} rows")
+
+    # Ensure numeric data
+    for col in ['pm25', 'no2', 'o3', 'wind_speed', 'pvi']:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
 
-    # Check required columns
-    missing = [c for c in ['pm25','no2','o3'] if c not in df.columns]
-    if missing:
-        raise KeyError(f"CSV missing required pollutant columns: {missing}. Found: {df.columns.tolist()}")
+    df = df.dropna().reset_index(drop=True)
 
-    # Drop rows with missing pollutant data (optional: change to imputation)
-    df_clean = df.dropna(subset=['pm25','no2','o3']).copy()
-
-    # Ensure vulnerability & wind are present, else fill defaults
-    if 'vul' not in df_clean.columns:
-        df_clean['vul'] = default_vul
-    else:
-        df_clean['vul'] = pd.to_numeric(df_clean['vul'], errors='coerce').fillna(default_vul)
-
-    if 'wind' not in df_clean.columns:
-        df_clean['wind'] = default_wind
-    else:
-        df_clean['wind'] = pd.to_numeric(df_clean['wind'], errors='coerce').fillna(default_wind)
-
-    # Run FIS row-wise
     results = []
-    for _, row in df_clean.iterrows():
-        sample = {'pm25': row['pm25'], 'no2': row['no2'], 'o3': row['o3'], 'vul': row['vul'], 'wind': row['wind']}
-        res = run_fis_single(sample)
-        results.append(res['crisp'])
+    fired_rules_log = []
 
-    df_clean['fuzzy_alert_index'] = results
-    df_clean['alert_level'] = pd.cut(df_clean['fuzzy_alert_index'], bins=[-1,25,50,75,100],
-                                     labels=['Low','Moderate','High-sensitive','Severe-all'])
+    def evaluate_rules(pm25_val, no2_val, o3_val, wind_val, pvi_val):
+        """Evaluate which rules fire strongly for a given input set"""
+        fired = []
+        if pm25_val <= 25 and no2_val <= 80 and o3_val <= 80:
+            fired.append("R1: Clean air -> Low Risk")
+        if pm25_val >= 75:
+            fired.append("R2: Very high PM2.5 -> Severe Warning")
+        if 25 <= pm25_val <= 55 and 60 <= o3_val <= 120 and wind_val <= 2.5:
+            fired.append("R4: Moderate PM2.5+O3 + Low wind -> High Alert")
+        if 25 <= pm25_val <= 55 and pvi_val >= 6:
+            fired.append("R5: Moderate PM2.5 + High PVI -> High Alert")
+        if no2_val >= 100 and pvi_val >= 6:
+            fired.append("R7: High NO2 + High PVI -> Severe Warning")
+        return fired
 
-    # Save CSV
-    df_clean.to_csv(output_path, index=False)
-    print(f"Saved processed CSV with alerts to: {output_path}")
+    print("Processing data through fuzzy inference system...")
 
-    # Optional plots directory
-    if save_plots:
-        if plots_dir is None:
-            plots_dir = os.path.dirname(output_path) or '.'
-        os.makedirs(plots_dir, exist_ok=True)
-        save_mf_plots(plots_dir)
-        # try parse date for timeseries
+    for i, row in df.iterrows():
         try:
-            df_clean['date_parsed'] = pd.to_datetime(df_clean['date'], infer_datetime_format=True)
-        except Exception:
-            df_clean['date_parsed'] = pd.RangeIndex(start=0, stop=len(df_clean))
-        # timeseries plot
-        plt.figure(figsize=(10, 4))
-        raw = df_clean['fuzzy_alert_index']
-        scaled = (raw - raw.min()) / (raw.max() - raw.min()) * 100
+            # Set all 5 inputs
+            sim.input['pm25'] = float(row['pm25'])
+            sim.input['no2'] = float(row['no2'])
+            sim.input['o3'] = float(row['o3'])
+            sim.input['wind_speed'] = float(row['wind_speed'])
+            sim.input['pvi'] = float(row['pvi'])
 
-        plt.plot(df_clean['date_parsed'], raw, 'o-', label='Raw index')
-        plt.plot(df_clean['date_parsed'], scaled, 'r--', label='Scaled (0–100)')
-        plt.title('Fuzzy Alert Index over time (raw vs scaled)')
-        plt.xlabel('Date')
-        plt.ylabel('Fuzzy Alert Index')
-        plt.legend()
+            # Compute output
+            sim.compute()
+            out = float(sim.output['alert'])
 
-        plt.tight_layout()
-        timeseries_path = os.path.join(plots_dir, 'fuzzy_alert_timeseries.png')
-        plt.savefig(timeseries_path, dpi=200)
-        plt.close()
-        print(f"Saved time-series plot to: {timeseries_path}")
+            # Log which rules fired
+            fired_rules = evaluate_rules(
+                row['pm25'], row['no2'], row['o3'],
+                row['wind_speed'], row['pvi']
+            )
+
+        except Exception as e:
+            out = np.nan
+            fired_rules = [f"Error: {e}"]
+            print(f"Computation failed on row {i}: {e}")
+
+        results.append(out)
+        fired_rules_log.append(fired_rules)
+
+    df['fuzzy_alert_index'] = np.round(results, 2)
+    df['fired_rules'] = fired_rules_log
+
+    # Map to categorical labels
+    df['alert_level'] = pd.cut(
+        df['fuzzy_alert_index'],
+        bins=[-0.1, 25, 50, 75, 100],
+        labels=['Low Risk', 'Moderate Advisory', 'High Alert', 'Severe Warning']
+    )
+
+    # Save results
+    os.makedirs(output_dir, exist_ok=True)
+    output_csv = os.path.join(output_dir, 'air_quality_complete_analysis.csv')
+    df.to_csv(output_csv, index=False)
+    print(f"Saved results to {output_csv}")
+
+    # Generate plots
+    mf_path = save_membership_plots(output_dir)
+    ts_path = save_timeseries_plot(df, output_dir)
+    dist_path = save_alert_distribution_plot(df, output_dir)
+
+    print(f"Saved membership functions: {mf_path}")
+    print(f"Saved timeseries plot: {ts_path}")
+    print(f"Saved distribution plot: {dist_path}")
+
+    return df
 
 
-    # return processed dataframe
-    return df_clean
+# ------------------------
+# 8) Printing out in terminal the comprehensive report
+# ------------------------
 
-def save_mf_plots(out_dir):
-    # Save a combined plot of input & output MFs
-    fig, axes = plt.subplots(3,2, figsize=(12,12))
-    ax = axes.flatten()
+def generate_report(df):
+    """Generate the comprehensive analysis report"""
 
-    ax[0].plot(u_pm25, pm25_low); ax[0].plot(u_pm25, pm25_mod); ax[0].plot(u_pm25, pm25_high); ax[0].plot(u_pm25, pm25_vhigh)
-    ax[0].set_title('PM2.5 MFs'); ax[0].legend(['low','mod','high','vhigh'])
-    ax[1].plot(u_no2, no2_low); ax[1].plot(u_no2, no2_mod); ax[1].plot(u_no2, no2_high); ax[1].plot(u_no2, no2_vhigh)
-    ax[1].set_title('NO2 MFs'); ax[1].legend(['low','mod','high','vhigh'])
-    ax[2].plot(u_o3, o3_low); ax[2].plot(u_o3, o3_mod); ax[2].plot(u_o3, o3_high); ax[2].plot(u_o3, o3_vhigh)
-    ax[2].set_title('O3 MFs'); ax[2].legend(['low','mod','high','vhigh'])
-    ax[3].plot(u_vul, vul_low); ax[3].plot(u_vul, vul_med); ax[3].plot(u_vul, vul_high)
-    ax[3].set_title('Vulnerability MFs'); ax[3].legend(['low','med','high'])
-    ax[4].plot(u_wind, wind_low); ax[4].plot(u_wind, wind_mod); ax[4].plot(u_wind, wind_high)
-    ax[4].set_title('Wind MFs'); ax[4].legend(['low','mod','high'])
-    ax[5].plot(u_out, out_low); ax[5].plot(u_out, out_mod); ax[5].plot(u_out, out_highs); ax[5].plot(u_out, out_severe)
-    ax[5].set_title('Output Alert Level MFs'); ax[5].legend(['low','moderate','highs','severe'])
-    plt.tight_layout()
-    path = os.path.join(out_dir, 'membership_functions.png')
-    plt.savefig(path, dpi=200)
-    plt.close()
-    print(f"Saved membership function plot to: {path}")
+    print("\n" + "=" * 60)
+    print("FUZZY AIR QUALITY ALERT SYSTEM - COMPLETE ANALYSIS")
+    print("=" * 60)
 
-# -----------------------------
-# CLI
-# -----------------------------
-def parse_args():
-    p = argparse.ArgumentParser(description='Fuzzy Air Quality → Public Health Alert Level')
-    p.add_argument('--input', '-i', required=True, help='Input CSV path')
-    p.add_argument('--output', '-o', required=True, help='Output CSV path (with alerts)')
-    p.add_argument('--vul-default', type=float, default=0.6, help='Default vulnerability (0..1) if not in CSV')
-    p.add_argument('--wind-default', type=float, default=3.0, help='Default wind speed (m/s) if not in CSV')
-    p.add_argument('--plots-dir', default=None, help='Directory to save plots (defaults to output dir)')
-    p.add_argument('--no-plots', action='store_true', help='Do not save plots')
-    return p.parse_args()
+    print(f"\nDataset Overview:")
+    print(f"Total days analyzed: {len(df)}")
+    if 'date' in df.columns:
+        print(f"Date range: {df['date'].min()} to {df['date'].max()}")
 
-def main():
-    args = parse_args()
-    plots_dir = args.plots_dir if args.plots_dir else None
-    save_plots = not args.no_plots
-    df_processed = process_csv(args.input, args.output, default_vul=args.vul_default,
-                               default_wind=args.wind_default, save_plots=save_plots, plots_dir=plots_dir)
-    # Print brief counts
-    counts = df_processed['alert_level'].value_counts().reindex(['Low','Moderate','High-sensitive','Severe-all']).fillna(0).astype(int)
-    print("Alert level counts:")
-    print(counts.to_string())
+    print("\nPollutant Statistics:")
+    print(df[['pm25', 'no2', 'o3']].describe().round(1))
+
+    print("\nEnvironmental & Vulnerability Factors:")
+    print(df[['wind_speed', 'pvi']].describe().round(1))
+
+    print("\nFuzzy Alert Level Distribution:")
+    alert_counts = df['alert_level'].value_counts().sort_index()
+    for level, count in alert_counts.items():
+        percentage = (count / len(df)) * 100
+        print(f"  {level}: {count} days ({percentage:.1f}%)")
+
+    # Traditional AQI comparison
+    def calculate_simple_aqi(pm25_val, no2_val, o3_val):
+        def pm25_to_aqi(pm25):
+            if pm25 <= 12:
+                return (pm25 / 12) * 50
+            elif pm25 <= 35.4:
+                return 50 + ((pm25 - 12.1) / (35.4 - 12.1)) * 50
+            elif pm25 <= 55.4:
+                return 100 + ((pm25 - 35.5) / (55.4 - 35.5)) * 50
+            elif pm25 <= 150.4:
+                return 150 + ((pm25 - 55.5) / (150.4 - 55.5)) * 100
+            else:
+                return 300 + ((pm25 - 150.5) / (250.4 - 150.5)) * 100
+
+        def no2_to_aqi(no2):
+            if no2 <= 53:
+                return (no2 / 53) * 50
+            elif no2 <= 100:
+                return 50 + ((no2 - 54) / (100 - 54)) * 50
+            elif no2 <= 360:
+                return 100 + ((no2 - 101) / (360 - 101)) * 100
+            else:
+                return 200
+
+        def o3_to_aqi(o3):
+            if o3 <= 54:
+                return (o3 / 54) * 50
+            elif o3 <= 70:
+                return 50 + ((o3 - 55) / (70 - 55)) * 50
+            elif o3 <= 85:
+                return 100 + ((o3 - 71) / (85 - 71)) * 50
+            elif o3 <= 105:
+                return 150 + ((o3 - 86) / (105 - 86)) * 100
+            else:
+                return 250
+
+        aqi_pm25 = min(pm25_to_aqi(pm25_val), 500)
+        aqi_no2 = min(no2_to_aqi(no2_val), 500)
+        aqi_o3 = min(o3_to_aqi(o3_val), 500)
+
+        return max(aqi_pm25, aqi_no2, aqi_o3)
+
+    df['traditional_aqi'] = df.apply(
+        lambda row: calculate_simple_aqi(row['pm25'], row['no2'], row['o3']), axis=1
+    )
+
+    df['aqi_vs_fuzzy_diff'] = df['traditional_aqi'] - df['fuzzy_alert_index']
+
+    print("\n" + "=" * 50)
+    print("COMPARISON: Traditional AQI vs Fuzzy System")
+    print("=" * 50)
+
+    high_discrepancy = df[df['aqi_vs_fuzzy_diff'].abs() > 20]
+    print(f"Days with significant difference (>20 points): {len(high_discrepancy)}")
+
+    print(f"\n✅ Analysis complete! All outputs saved to 'output' directory.")
+
+    return df
+
+
+# ------------------------
+# 9) Main execution
+# ------------------------
 
 if __name__ == '__main__':
-    input_path = r"C:\Users\xd\PycharmProjects\PythonProject1\kuala-lumpur-air-quality.csv"  # <-- your real path
-    output_path = r"C:\Users\xd\PycharmProjects\PythonProject1\air-alert-results.csv"       # output file path
+    # Create output directory
+    output_dir = 'output'
 
-    process_csv(input_path, output_path, default_vul=0.6, default_wind=3.0, save_plots=True)
+    # Run the complete analysis
+    df = run_fuzzy_analysis(output_dir=output_dir)
+
+    # Generate comprehensive report
+    generate_report(df)
+
+    # Show sample results
+    print(f"\nFirst 5 days of analysis:")
+    display_cols = ['date', 'pm25', 'no2', 'o3', 'wind_speed', 'pvi', 'fuzzy_alert_index', 'alert_level']
+    available_cols = [col for col in display_cols if col in df.columns]
+    print(df[available_cols].head().to_string(index=False))
